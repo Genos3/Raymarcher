@@ -11,7 +11,6 @@
 #define FRACTAL_ITER 16
 #define MIN_DIST 1e-5
 #define MIN_DIST_S (MIN_DIST * 10.0)
-#define FULL_NORMAL 1
 #define DRAW_DE 0
 
 #define SHADOWS_ENABLED 1
@@ -27,18 +26,19 @@
 #define BACKGROUND_COLOR vec3(0.6, 0.8, 1.0)
 #define LIGHT_COLOR vec3(1.0, 0.95, 0.8)
 #define HAZE_COLOR vec3(0.85, 0.9, 1.0)
+#define FOG_COLOR vec3(0.7, 0.75, 0.8)
+#define FOG_DENSITY 0.01
 #define SUN_ENABLED 1
 #define SUN_SHARPNESS 2.0
 #define SUN_SIZE 0.0004
 #define VIGNETTE_ENABLED 0
 #define VIGNETTE_STRENGTH 0.5
 #define SKY_ENABLED 1
-#define FOG_ENABLED 0
+#define FOG_ENABLED 1
 #define SEA_ENABLED 1
 #define VOLUMETRIC_WAVES 1
-#define ENABLE_WATER_REFLECTION 0
-#define ENABLE_WATER_REFRACTION 0
-#define ENABLE_REFL_REFR_WATER (ENABLE_WATER_REFLECTION | ENABLE_WATER_REFRACTION)
+#define ENABLE_REFL_REFR_WATER 0
+#define ENABLE_WATER_SEC_BOUNCE 1
 #define ENABLE_SHADOWS_ON_SEA 1
 #define ENABLE_WAVE_CAUSTICS 1
 #define BLINN_PHONG_SEA 0
@@ -65,23 +65,25 @@
 #define MARBLE_COLOR vec3(0.2, 0.2, 0.8) // blue
 // #define MARBLE_COLOR vec3(0.7, 0.7, 0.7) // gray
 
+#define NUM_RAY_LIMIT 3
+
 #define DEFAULT_REFRACTION 1
 #define DEFAULT_REFLECTION 1
 #define DEBUG_SPHERES 0
 #define VIEW_SHADOWMAP 0
-#define ENABLE_WATER_SEC_BOUNCE 0
 #define RELAXED_RAYMARCH 0 // same speed
 
 #define OUTPUT_ENABLED 1 // used for debugging
 
 // elements id's
+#define NONE 0
 #define AIR 0
 #define FRACTAL 1
 #define MARBLE 2
 #define FLAG 3
 #define SEA 4
 
-// ray types // not needed
+// ray types
 #define PRIM_RAY 0
 #define REFL_RAY 1
 #define REFR_RAY 2
@@ -92,6 +94,27 @@
 #if DEFAULT_REFLECTION
   #define reflect reflection
 #endif
+
+struct sea_t {
+  float a1;
+  float a2;
+  float fade;
+  float t;
+  vec3 p;
+};
+
+struct ray_t {
+  vec3 p;
+  vec3 rd;
+  vec3 refl;
+  vec3 n;
+  float t;
+  float init_dist;
+  int id;
+  int type;
+  int owner;
+  bool is_underwater;
+};
 
 void mengerFold(inout vec4 z);
 void rotX(inout vec4 z, float a);
@@ -108,8 +131,8 @@ vec4 ld_scene(vec3 pos);
 float de_marble(vec3 p);
 float de_flag(vec3 p);
 vec3 col_flag(vec3 p);
-float de_scene(vec3 p, bool an_hit_marble, bool an_hit_flag);
-float de_scene_sh(vec3 p, bool an_hit_marble, bool an_hit_flag);
+float de_scene(vec3 p, bool an_hit_marble, bool an_hit_flag, out int closer_elem);
+float de_scene_sh(vec3 p, bool an_hit_marble, bool an_hit_flag, out int closer_elem);
 float de_scene_ao(vec3 p, bool an_hit_marble, bool an_hit_flag);
 float de_scene_n(vec3 p);
 vec3 col_scene(vec3 p);
@@ -128,13 +151,14 @@ vec4 relaxed_raymarch(inout vec3 p, vec3 rd, float init_dist, bool hit_sea, floa
 #if ENABLE_SHADOW_SPARSE_RAYS && VIEW_SHADOWMAP
   float shadow_lookup(vec3 p, float min_dist);
 #endif
-#if FULL_NORMAL
-  vec3 frac_color(vec3 p, vec3 rd, vec3 n, float k, float min_dist, float prev_d);
-#else
-  vec3 frac_color(vec3 p, vec3 rd, float k, float min_dist, float prev_d);
-#endif
+vec3 frac_color(vec3 p, vec3 rd, vec3 n, float k, float min_dist, float prev_d);
 vec3 sky_color(vec3 rd);
-vec3 marble_color(vec3 p, vec3 rd);
+#if MARBLE_DIFFUSE
+  vec3 marble_diff_color(ray_t ray);
+#else
+  bool marble_refl_refr_color(inout ray_t prim, out ray_t ray_out, inout vec3 s_color);
+  bool marble_calc_refr(inout ray_t ray);
+#endif
 vec3 sea_color(vec3 rd);
 vec3 get_waves_normal(bool p_is_underwater);
 #if !VOLUMETRIC_WAVES
@@ -146,13 +170,12 @@ vec3 get_waves_normal(bool p_is_underwater);
   bool test_vol_sea_hit(vec3 p, vec3 rd, bool p_is_underwater);
   bool test_if_underwater(vec3 p);
 #endif
-#if !ENABLE_REFL_REFR_WATER
-  vec3 sea_surface_color(vec3 p, vec3 rd, bool p_is_underwater);
-#else
+vec3 sea_surface_color(ray_t ray);
+#if ENABLE_REFL_REFR_WATER
   vec3 waves_surface_color(vec3 p, vec3 rd, vec3 n);
+  bool waves_color(inout ray_t prim, out ray_t ray_out, inout vec3 s_color);
 #endif
-vec3 waves_color(vec3 p, vec3 rd, bool p_is_underwater);
-vec3 scene(vec3 p, vec3 rd, float init_dist, int ray_id, bool p_is_underwater);
+vec3 scene(inout ray_t ray);
 
 out vec4 fragColor;
 
@@ -193,6 +216,7 @@ uniform float ortho_scale;
 uniform float shadow_sharpness;
 
 float FOVperPixel;
+int num_rays;
 int closer_elem;
 int closer_elem_sh;
 int elem_hit;
@@ -202,15 +226,8 @@ bool g_hit_scene;
 float t_scene;
 bool cam_is_underwater;
 
-struct sea_t {
-  float a1;
-  float a2;
-  float fade;
-  float t;
-  vec3 p;
-};
-
 sea_t r_sea;
+float t_sea_prim, t_scene_prim;
 
 #if VIGNETTE_ENABLED
   vec2 screen_pos;
@@ -364,7 +381,7 @@ vec3 col_flag(vec3 p) {
 	}
 }
 
-float de_scene(vec3 p, bool an_hit_marble, bool an_hit_flag) {
+float de_scene(vec3 p, bool an_hit_marble, bool an_hit_flag, out int closer_elem) {
   float d = de_fractal(p);
   closer_elem = FRACTAL;
   
@@ -387,15 +404,15 @@ float de_scene(vec3 p, bool an_hit_marble, bool an_hit_flag) {
   return d;
 }
 
-float de_scene_sh(vec3 p, bool an_hit_marble, bool an_hit_flag) {
+float de_scene_sh(vec3 p, bool an_hit_marble, bool an_hit_flag, out int closer_elem) {
   float d = de_fractal(p);
-  closer_elem_sh = FRACTAL;
+  closer_elem = FRACTAL;
   
   if (an_hit_marble) {
     float dm = de_marble(p);
     if (dm < d) {
       d = dm;
-      closer_elem_sh = MARBLE;
+      closer_elem = MARBLE;
     }
   }
   
@@ -403,7 +420,7 @@ float de_scene_sh(vec3 p, bool an_hit_marble, bool an_hit_flag) {
     float df = de_flag(p);
     if (df < d) {
       d = df;
-      closer_elem_sh = FLAG;
+      closer_elem = FLAG;
     }
   }
   
@@ -481,7 +498,6 @@ float calcAO(vec3 p, vec3 n) {
   
   float ao = 0.0;
   float t = 0.05;
-  elem_hit = 0;
 
   for (int i = 0; i < AO_SAMPLES; i++) {
     float d = de_scene_ao(p + n * t, an_hit_marble, an_hit_flag);
@@ -529,13 +545,13 @@ vec4 raymarch(inout vec3 p, vec3 rd, float init_dist, bool hit_sea, float t_sea_
   float d, min_dist;
   float t = init_dist;
   float prev_d = 0.0;
-  closer_elem = 0;
-  elem_hit = 0;
+  int closer_elem = NONE;
+  elem_hit = NONE;
   
   p += rd * init_dist;
   
   for (int i = 0; i < uMaxSteps; i++) {
-    d = de_scene(p, an_hit_marble, an_hit_flag);
+    d = de_scene(p, an_hit_marble, an_hit_flag, closer_elem);
     
     #if DRAW_DE
       num_DEs += 0.01;
@@ -584,7 +600,6 @@ vec2 raymarch_shadow_inv(vec3 p, vec3 rd, float init_dist, float sharpness) {
     ly / ortho_scale + 0.5
   );
   
-  float texture_depth;
   if (uv.x < 0.0 || uv.x > 1.0 ||
       uv.y < 0.0 || uv.y > 1.0) {
     max_depth = depth_far;
@@ -594,7 +609,7 @@ vec2 raymarch_shadow_inv(vec3 p, vec3 rd, float init_dist, float sharpness) {
       light_up * ly;
     
     float light_dist = dot(p - light_origin, light_forward);
-    texture_depth = texture(shadow_tex, uv).r;
+    float texture_depth = texture(shadow_tex, uv).r;
     max_depth = light_dist - texture_depth;
     p += rd * max_depth; // set p on the shadow map
   }
@@ -609,20 +624,20 @@ vec2 raymarch_shadow_inv(vec3 p, vec3 rd, float init_dist, float sharpness) {
   
   float t = init_dist;
   float min_d = 1.0;
-  closer_elem_sh = 0;
+  int closer_elem = 0;
   elem_hit_sh = 0;
   
   p += rd * init_dist;
   
   for (int i = 0; i < uMaxSteps; i++) {
-    float d = de_scene_sh(p, an_hit_marble, an_hit_flag);
+    float d = de_scene_sh(p, an_hit_marble, an_hit_flag, closer_elem);
     
     #if DRAW_DE
       num_DEs += 0.01;
     #endif
     
     if (d < MIN_DIST) {
-      elem_hit_sh = closer_elem_sh;
+      elem_hit_sh = closer_elem;
       break;
     }
     
@@ -632,7 +647,7 @@ vec2 raymarch_shadow_inv(vec3 p, vec3 rd, float init_dist, float sharpness) {
     min_d = min(min_d, sharpness * d / (max_depth - t));
   }
   
-  t += texture_depth;
+  // t += texture_depth; // 0.68 ms slower
   
   return vec2(t, min_d);
 }
@@ -648,20 +663,20 @@ float raymarch_shadow_marble(vec3 p, vec3 rd, float init_dist, float sharpness, 
   
   float t = init_dist;
   float min_d = 1.0;
-  closer_elem_sh = 0;
-  elem_hit_sh = 0;
+  int closer_elem = NONE;
+  elem_hit_sh = NONE;
   
   p += rd * init_dist;
   
   for (int i = 0; i < uMaxSteps; i++) {
-    float d = de_scene_sh(p, false, an_hit_flag);
+    float d = de_scene_sh(p, false, an_hit_flag, closer_elem);
     
     #if DRAW_DE
       num_DEs += 0.01;
     #endif
     
     if (d < MIN_DIST) {
-      elem_hit_sh = closer_elem_sh;
+      elem_hit_sh = closer_elem;
       break;
     }
     
@@ -695,15 +710,15 @@ float raymarch_shadow_marble(vec3 p, vec3 rd, float init_dist, float sharpness, 
     float d, min_dist;
     float t = init_dist;
     float prev_d = 0.0;
-    closer_elem = 0;
-    elem_hit = 0;
+    int closer_elem = NONE;
+    elem_hit = NONE;
     bool relaxed = true;
     float z = 0.0;
     
     p += rd * init_dist;
     
     for (int i = 0; i < uMaxSteps; i++) {
-      d = de_scene(p, an_hit_marble, an_hit_flag);
+      d = de_scene(p, an_hit_marble, an_hit_flag, closer_elem);
       
       #if DRAW_DE
         num_DEs += 0.01;
@@ -803,143 +818,72 @@ float raymarch_shadow_marble(vec3 p, vec3 rd, float init_dist, float sharpness, 
   }
 #endif
 
-#if FULL_NORMAL
-  vec3 frac_color(vec3 p, vec3 rd, vec3 n, float k, float min_dist, float prev_d) {
-    vec3 color;
-    vec3 base_color = col_scene(p);
-    
-    #if AO_ENABLED
-      #if FULL_AO
-        float ao = calcAO(p, n);
-        ao = mix(1.0, ao, SHADOW_DARKNESS);
-      #else
-        float ao = clamp(prev_d / (min_dist * 10), 0.0, 1.0);
-        ao = mix(1.0, ao, 0.5);
-        // ao = pow(ao, 2.0);
-      #endif
-      vec3 ambient = base_color * AMBIENT_COLOR * ao;
+vec3 frac_color(vec3 p, vec3 rd, vec3 n, float k, float min_dist, float prev_d) {
+  vec3 color;
+  vec3 base_color = col_scene(p);
+  
+  #if AO_ENABLED
+    #if FULL_AO
+      float ao = calcAO(p, n);
+      ao = mix(1.0, ao, SHADOW_DARKNESS);
     #else
-      vec3 ambient = base_color * (1.0 - SHADOW_DARKNESS);
+      float ao = clamp(prev_d / (min_dist * 10), 0.0, 1.0);
+      ao = mix(1.0, ao, 0.5);
+      // ao = pow(ao, 2.0);
     #endif
-    
-    #if SHADOWS_ENABLED
-      // if it's not in the shadow
-      if (k > min_dist * 10) {
-        // float ao = clamp(s * AO_SCALE, 0.0, 1.0);
-        float diff = max(dot(n, lightdir_n), 0.0);
-        vec3 diff_col = diff * base_color * LIGHT_COLOR * k;
-        #if COLORED_GLASS_MARBLE
-          if (elem_hit_sh == MARBLE) {
-            diff_col *= MARBLE_COLOR;
-          }
-        #endif
-        
-        #if SPECULAR_ENABLED
-          // half view vector
-          vec3 half_view = normalize(lightdir_n - rd);
-          float spec = pow(max(dot(n, half_view), 0.0), SPECULAR_SHININESS);
-          vec3 spec_col = spec * LIGHT_COLOR * SPECULAR_STRENGTH * k;
-          #if COLORED_GLASS_MARBLE
-            if (elem_hit_sh == MARBLE) {
-              spec_col *= MARBLE_COLOR;
-            }
-          #endif
-          
-          color = diff_col + spec_col + ambient;
-        #else
-          color = diff_col + ambient;
-        #endif
-      } else {
-        color = ambient;
-      }
-    #else
+    vec3 ambient = base_color * AMBIENT_COLOR * ao;
+  #else
+    vec3 ambient = base_color * (1.0 - SHADOW_DARKNESS);
+  #endif
+  
+  #if SHADOWS_ENABLED
+    // if it's not in the shadow
+    if (k > min_dist * 10) {
+      // float ao = clamp(s * AO_SCALE, 0.0, 1.0);
       float diff = max(dot(n, lightdir_n), 0.0);
-      vec3 diff_col = diff * base_color * LIGHT_COLOR;
+      vec3 diff_col = diff * base_color * LIGHT_COLOR * k;
+      #if COLORED_GLASS_MARBLE
+        if (elem_hit_sh == MARBLE) {
+          diff_col *= MARBLE_COLOR;
+        }
+      #endif
       
       #if SPECULAR_ENABLED
         // half view vector
         vec3 half_view = normalize(lightdir_n - rd);
         float spec = pow(max(dot(n, half_view), 0.0), SPECULAR_SHININESS);
-        vec3 spec_col = spec * LIGHT_COLOR * SPECULAR_STRENGTH;
-        
-        color = diff_col + spec_col + ambient;
-      #else
-        color = diff_col + ambient;
-      #endif
-    #endif
-    
-    return color;
-  }
-#else
-  vec3 frac_color(vec3 p, vec3 rd, float k, float min_dist, float prev_d) {
-    vec3 color;
-    vec3 base_color = col_scene(p);
-    
-    #if AO_ENABLED
-      float ao = clamp(prev_d / (min_dist * 10), 0.0, 1.0);
-      ao = mix(1.0, ao, 0.5);
-      // ao = pow(ao, 2.0);
-      vec3 ambient = base_color * AMBIENT_COLOR * ao;
-    #else
-      vec3 ambient = base_color * AMBIENT_COLOR * (1.0 - SHADOW_DARKNESS);
-    #endif
-    
-    #if SHADOWS_ENABLED
-      // if it's not in the shadow
-      if (k > min_dist * 10) {
-        // pointing to the sun
-        vec3 p_light = p + lightdir_n * min_dist;
-        float d_light = de_scene(p_light);
-        float diff = max((d_light - d) / min_dist, 0.0);
-        vec3 diff_col = diff * base_color * LIGHT_COLOR * k;
+        vec3 spec_col = spec * LIGHT_COLOR * SPECULAR_STRENGTH * k;
         #if COLORED_GLASS_MARBLE
           if (elem_hit_sh == MARBLE) {
-            diff_col *= MARBLE_COLOR;
+            spec_col *= MARBLE_COLOR;
           }
         #endif
         
-        #if SPECULAR_ENABLED
-          // half view vector
-          vec3 p_half = p + normalize(lightdir_n - rd) * min_dist;
-          float d_half = de_scene(p_half);
-          float spec = pow(max((d_half - d) / min_dist, 0.0), SPECULAR_SHININESS);
-          vec3 spec_col = spec * LIGHT_COLOR * SPECULAR_STRENGTH * k;
-          #if COLORED_GLASS_MARBLE
-            if (elem_hit_sh == MARBLE) {
-              spec_col *= MARBLE_COLOR;
-            }
-          #endif
-          
-          color = diff_col + spec_col + ambient;
-        #else
-          color = diff_col + ambient;
-        #endif
-      } else {
-        color = ambient;
-      }
-    #else
-      // pointing to the sun
-      vec3 p_light = p + lightdir_n * min_dist;
-      float d_light = de_scene(p_light);
-      float diff = max((d_light - d) / min_dist, 0.0);
-      vec3 diff_col = diff * base_color * LIGHT_COLOR;
-      
-      #if SPECULAR_ENABLED
-        // half view vector
-        vec3 p_half = p + normalize(lightdir_n - rd) * min_dist;
-        float d_half = de_scene(p_half);
-        float spec = pow(max((d_half - d) / min_dist, 0.0), SPECULAR_SHININESS);
-        vec3 spec_col = spec * LIGHT_COLOR * SPECULAR_STRENGTH;
-        
         color = diff_col + spec_col + ambient;
       #else
         color = diff_col + ambient;
       #endif
-    #endif
+    } else {
+      color = ambient;
+    }
+  #else
+    float diff = max(dot(n, lightdir_n), 0.0);
+    vec3 diff_col = diff * base_color * LIGHT_COLOR;
     
-    return color;
-  }
-#endif
+    #if SPECULAR_ENABLED
+      // half view vector
+      vec3 half_view = normalize(lightdir_n - rd);
+      float spec = pow(max(dot(n, half_view), 0.0), SPECULAR_SHININESS);
+      vec3 spec_col = spec * LIGHT_COLOR * SPECULAR_STRENGTH;
+      
+      color = diff_col + spec_col + ambient;
+    #else
+      color = diff_col + ambient;
+    #endif
+  #endif
+  
+  return color;
+}
 
 vec3 sky_color(vec3 rd) {
   #if SKY_ENABLED
@@ -978,79 +922,127 @@ vec3 sky_color(vec3 rd) {
   return sky;
 }
 
-vec3 marble_color(vec3 p, vec3 rd) {
-  vec3 color;
-  #if MARBLE_DIFFUSE
-    vec3 ambient = MARBLE_COLOR * AMBIENT_COLOR * (1.0 - SHADOW_DARKNESS);
+#if MARBLE_DIFFUSE
+  vec3 marble_diff_color(ray_t ray) {
+    vec3 ambient = MARBLE_COLOR  * (1.0 - SHADOW_DARKNESS); // * AMBIENT_COLOR
     
-    vec3 n = normalize(p - iMarblePos);
-    float diff = max(dot(n, light_dir_n), 0.0);
+    vec3 n = normalize(ray.p - iMarblePos);
+    float diff = max(dot(n, lightdir_n), 0.0);
     vec3 diff_col = diff * MARBLE_COLOR * LIGHT_COLOR;
     
-    vec3 half_view = normalize(lightdir_n - rd);
+    vec3 half_view = normalize(lightdir_n - ray.rd);
     float spec = pow(max(dot(n, half_view), 0.0), SPECULAR_SHININESS);
     vec3 spec_col = spec * LIGHT_COLOR * SPECULAR_STRENGTH;
     
-    color = diff_col + spec_col + ambient;
-  #else
-    vec3 n = normalize(p - iMarblePos);
+    vec3 color = diff_col + spec_col + ambient;
     
-    // Calculate reflection
-    vec3 r = reflect(rd, n);
-    vec3 p_refl = p + n * MIN_DIST_S;
-    vec3 refl = scene(p_refl, r, 0.05, 0, cam_is_underwater);
-    
-    if (elem_hit == SEA) {
-      #if !ENABLE_REFL_REFR_WATER
-        refl = sea_surface_color(r_sea.p, r, cam_is_underwater);
-      #else
-        refl = waves_color(r_sea.p, r, cam_is_underwater);
-      #endif
+    // fade the marble against the sea
+    if (ray.is_underwater) {
+      float fog = 1.0 - exp(-t_scene_prim * 0.15);
+      color = mix(color, LIGHT_BLUE, fog);
     }
     
-    // Calculate refraction
-    vec3 q = refract(rd, n, 1.0 / 1.5);
+    return color;
+  }
+#else
+  bool marble_refl_refr_color(inout ray_t prim, out ray_t ray_out, inout vec3 s_color) {
+    if (prim.type == PRIM_RAY) {
+      prim.n = normalize(prim.p - iMarblePos);
+      
+      // Calculate reflection
+      vec3 r = reflect(prim.rd, prim.n);
+      vec3 p_refl = prim.p + prim.n * MIN_DIST_S;
+      
+      ray_out.p = p_refl;
+      ray_out.rd = r;
+      ray_out.init_dist = 0.05;
+      ray_out.id = 0;
+      ray_out.type = PRIM_RAY;
+      ray_out.owner = prim.owner;
+      ray_out.is_underwater = prim.is_underwater;
+      prim.type = REFL_RAY;
+      return true;
+    }
     
-    vec3 refr;
+    if (prim.type == REFL_RAY) {
+      prim.refl = s_color;
+      
+      // Calculate refraction
+      vec3 q = refract(prim.rd, prim.n, 1.0 / 1.5);
+      
+      if (dot(q, q) > 0.0) {
+        vec3 p2 = prim.p + (dot(q, -prim.n) * 2.0 * iMarbleRad) * q; // opposite side of the ball along q
+        vec3 n2 = normalize(p2 - iMarblePos);
+        // q = (dot(q, rd) * 2.0) * q - rd; // negative reflection
+        q = refract(q, -n2, 1.5);
+        vec3 p_refr = p2 + n2 * MIN_DIST_S;
+        
+        ray_out.p = p_refr;
+        ray_out.rd = q;
+        ray_out.init_dist = MIN_DIST_S;
+        ray_out.id = 0;
+        ray_out.type = PRIM_RAY;
+        ray_out.owner = prim.owner;
+        #if VOLUMETRIC_WAVES
+          ray_out.is_underwater = test_if_underwater(p_refr);
+        #else
+          ray_out.is_underwater = p_refr.y < SEA_LEVEL;
+        #endif
+        prim.type = REFR_RAY;
+        return true;
+      }
+    }
+    
+    // fresnel
+    float cos_theta = clamp(-dot(prim.rd, prim.n), 0.0, 1.0);
+    const float F0 = 0.04; // glass
+    float fresnel = F0 + (1.0 - F0) * pow(1.0 - cos_theta, 5.0);
+    
+    #if !COLORED_GLASS_MARBLE
+      s_color = s_color * (1.0 - fresnel) + prim.refl * fresnel;
+    #else
+      s_color = s_color * MARBLE_COLOR * (1.0 - fresnel) + prim.refl * fresnel;
+    #endif
+    
+    // fade the marble against the sea
+    if (prim.is_underwater) {
+      float fog = 1.0 - exp(-prim.t * 0.15);
+      s_color = mix(s_color, LIGHT_BLUE, fog);
+    }
+    
+    return false;
+  }
+  
+  bool marble_calc_refr(inout ray_t ray) {
+    vec3 n = normalize(ray.p - iMarblePos);
+    
+    // Calculate refraction
+    vec3 q = refract(ray.rd, n, 1.0 / 1.5);
+    
     if (dot(q, q) > 0.0) {
-      vec3 p2 = p + (dot(q, -n) * 2.0 * iMarbleRad) * q; // opposite side of the ball along q
+      vec3 p2 = ray.p + (dot(q, -n) * 2.0 * iMarbleRad) * q; // opposite side of the ball along q
       vec3 n2 = normalize(p2 - iMarblePos);
       // q = (dot(q, rd) * 2.0) * q - rd; // negative reflection
       q = refract(q, -n2, 1.5);
       vec3 p_refr = p2 + n2 * MIN_DIST_S;
-      refr = scene(p_refr, q, MIN_DIST_S, 0, cam_is_underwater);
-    } else {
-      refr = refl;
+      
+      ray.p = p_refr;
+      ray.rd = q;
+      ray.init_dist = 0.05;
+      return true;
     }
     
-    if (elem_hit == SEA) {
-      #if !ENABLE_REFL_REFR_WATER
-        refr = sea_surface_color(r_sea.p, q, cam_is_underwater);
-      #else
-        refr = waves_color(r_sea.p, q, cam_is_underwater);
-      #endif
-    }
-    
-    float cos_theta = clamp(-dot(rd, n), 0.0, 1.0);
-    const float F0 = 0.04;
-    float fresnel = F0 + (1.0 - F0) * pow(1.0 - cos_theta, 5.0);
-    
-    #if !COLORED_GLASS_MARBLE
-      color = refr * (1.0 - fresnel) + refl * fresnel;
-    #else
-      color = refr * MARBLE_COLOR * (1.0 - fresnel) + refl * fresnel;
-    #endif
-  #endif
-  
-  return color;
-}
+    return false;
+  }
+#endif
 
 vec3 sea_color(vec3 rd) {
   float horizon = clamp(1.0 - abs(rd.y), 0.0, 1.0);
   return mix(SEA_COLOR, LIGHT_BLUE, pow(horizon, 2.0));
 }
 
-// the returned normal always point outside the water surface
+// the returned normal always point in the direction the ray came
+// down for an underwater ray and up for an overwater one
 // requires r_sea being set
 
 vec3 get_waves_normal(bool p_is_underwater) {
@@ -1227,59 +1219,59 @@ vec3 get_waves_normal(bool p_is_underwater) {
   }
 #endif
 
-#if !ENABLE_REFL_REFR_WATER
-  vec3 sea_surface_color(vec3 p, vec3 rd, bool p_is_underwater) {
-    vec3 sea;
+vec3 sea_surface_color(ray_t ray) {
+  vec3 sea;
+  
+  vec3 n = get_waves_normal(ray.is_underwater);
+  
+  if (ray.is_underwater) {
+    vec3 r = reflect(ray.rd, n);
+    sea = sea_color(r);
     
-    vec3 n = get_waves_normal(p_is_underwater);
+    float fog = 1.0 - exp(-r_sea.t * 0.15);
+    sea = mix(sea, LIGHT_BLUE, fog);
+  } else {
+    #if ENABLE_SHADOWS_ON_SEA
+      // cast shadows on water
+      // vec3 p_light = p + lightdir_n * MIN_DIST_S;
+      
+      vec2 rm = raymarch_shadow_inv(ray.p, lightdir_n, MIN_DIST_S, shadow_sharpness);
+      float shadow = rm.y * min(rm.x, 1.0);
+      
+      float sun_diff = max(dot(n, lightdir_n), 0.0) * shadow;
+    #else
+      float sun_diff = max(dot(n, lightdir_n), 0.0);
+    #endif
     
-    if (p_is_underwater) {
-      vec3 r = reflect(rd, n);
-      sea = sea_color(r);
-      
-      float fog = 1.0 - exp(-r_sea.t * 0.15);
-      sea = mix(sea, LIGHT_BLUE, fog);
-    } else {
-      #if ENABLE_SHADOWS_ON_SEA
-        // cast shadows on water
-        // vec3 p_light = p + lightdir_n * MIN_DIST_S;
-        
-        vec2 rm = raymarch_shadow_inv(p, lightdir_n, MIN_DIST_S, shadow_sharpness);
-        float shadow = rm.y * min(rm.x, 1.0);
-        
-        float sun_diff = max(dot(n, lightdir_n), 0.0) * shadow;
-      #else
-        float sun_diff = max(dot(n, lightdir_n), 0.0);
-      #endif
-      
-      #if BLINN_PHONG_SEA
-        vec3 half_view = normalize(lightdir_n - rd);
-        float sun_spec = pow(max(dot(n, half_view), 0.0), 40.0);
-      #else
-        vec3 r = reflect(rd, n);
-        float sun_spec = pow(max(dot(r, lightdir_n), 0.0), 40.0) * 2.0;
-        vec3 refl = sky_color(r);
-      #endif
-      
-      // fresnel
-      float cos_theta = clamp(-dot(rd, n), 0.0, 1.0);
-      float F0 = 0.02;
-      float fresnel = F0 + (1.0 - F0) * pow(1.0 - cos_theta, 5.0);
-      
-      sea = mix(SEA_COLOR, refl, fresnel);
-      
-      sea += SEA_COLOR * sun_diff * 0.5;
-      
-      #if SHADOWS_ENABLED && ENABLE_SHADOWS_ON_SEA
-        sea += LIGHT_COLOR * sun_spec * shadow;
-      #else
-        sea += LIGHT_COLOR * sun_spec;
-      #endif
-    }
+    #if BLINN_PHONG_SEA
+      vec3 half_view = normalize(lightdir_n - ray.rd);
+      float sun_spec = pow(max(dot(n, half_view), 0.0), 40.0);
+    #else
+      vec3 r = reflect(ray.rd, n);
+      float sun_spec = pow(max(dot(r, lightdir_n), 0.0), 40.0) * 2.0;
+      vec3 refl = sky_color(r);
+    #endif
     
-    return sea;
+    // fresnel
+    float cos_theta = clamp(-dot(ray.rd, n), 0.0, 1.0);
+    float F0 = 0.02;
+    float fresnel = F0 + (1.0 - F0) * pow(1.0 - cos_theta, 5.0);
+    
+    sea = mix(SEA_COLOR, refl, fresnel);
+    
+    sea += SEA_COLOR * sun_diff * 0.5;
+    
+    #if SHADOWS_ENABLED && ENABLE_SHADOWS_ON_SEA
+      sea += LIGHT_COLOR * sun_spec * shadow;
+    #else
+      sea += LIGHT_COLOR * sun_spec;
+    #endif
   }
-#else
+  
+  return sea;
+}
+
+#if ENABLE_REFL_REFR_WATER
   vec3 waves_surface_color(vec3 p, vec3 rd, vec3 n) {
     #if ENABLE_SHADOWS_ON_SEA
       // cast shadows on water
@@ -1312,170 +1304,150 @@ vec3 get_waves_normal(bool p_is_underwater) {
     return sea;
   }
   
-  vec3 waves_color(vec3 p, vec3 rd, bool p_is_underwater) {
-    vec3 sea;
-    
-    vec3 n = get_waves_normal(p_is_underwater);
-    
+  bool waves_color(inout ray_t prim, out ray_t ray_out, inout vec3 s_color) {
     // if underwater
-    if (p_is_underwater) {
-      #if ENABLE_REFL_REFR_WATER
-        #if ENABLE_WATER_REFLECTION
+    if (prim.is_underwater) {
+      if (elem_hit == SEA) {
+        prim.n = get_waves_normal(prim.is_underwater);
+        
+        #if !ENABLE_WATER_SEC_BOUNCE
+          if (prim.id == 0)
+        #else
+          if (prim.id < 2)
+        #endif
+        {
           // reflection
-          vec3 r = reflect(rd, n);
+          vec3 r = reflect(prim.rd, prim.n);
           
           #if !ENABLE_WATER_SEC_BOUNCE
-            // make sure the ray goes underwater
+            // make sure the prim goes underwater
             if (r.y > 0) r.y = -r.y;
+          #else
+            if (prim.id == 1 && r.y > 0) r.y = -r.y;
           #endif
           
-          vec3 refl = scene(p, r, MIN_DIST_S, 1, true);
-          
-          #if ENABLE_WATER_SEC_BOUNCE
-            if (elem_hit == SEA) {
-              vec3 n2 = get_waves_normal(true);
-              // return vec3(n2 * 0.5 + 0.5); // colors the normals
-              vec3 r2 = reflect(r, n2);
-              if (r2.y > 0) r2.y = -r2.y;
-              
-              refl = scene(r_sea.p, r2, 0.05, 2, true);
-            }
-          #endif
-        #else
-          vec3 r = reflect(rd, n);
-          vec3 refl = sea_color(r);
-        #endif
-        
+          ray_out.p = prim.p;
+          ray_out.rd = r;
+          ray_out.init_dist = MIN_DIST_S;
+          ray_out.id++;
+          ray_out.type = PRIM_RAY;
+          ray_out.owner = prim.owner;
+          ray_out.is_underwater = true;
+          prim.type = REFL_RAY;
+          return true;
+        }
+      }
+      
+      // fade the fractal against the water
+      if (prim.type == REFL_RAY) {
         if (g_hit_scene) {
           float fog = 1.0 - exp(-t_scene * 0.15);
-          refl = mix(refl, LIGHT_BLUE, fog);
+          prim.refl = mix(s_color, LIGHT_BLUE, fog);
+        } else {
+          prim.refl = s_color;
         }
         
-        #if ENABLE_WATER_REFRACTION
-          // refraction
-          vec3 q = refract(rd, n, 1.33);
-          
-          vec3 refr;
-          if (dot(q, q) > 0.001) {
-            refr = scene(p, q, MIN_DIST_S, 1, false);
-            
-            #if ENABLE_WATER_SEC_BOUNCE
-              if (elem_hit == SEA) {
-                vec3 n2 = get_waves_normal(false);
-                vec3 r2 = reflect(q, n2);
-                if (r2.y < 0) r2.y = -r2.y;
-                
-                refr = scene(r_sea.p, r2, 0.05, 2, false);
-                
-                refr += waves_surface_color(r_sea.p, q, n2);
-              }
-            #endif
-            // if (!g_hit_scene) refr = sky_color(q);
-          } else {
-            refr = refl;
-          }
-        #else
-          vec3 refr = refl;
-        #endif
+        // refraction
+        vec3 q = refract(prim.rd, prim.n, 1.33);
         
-        // fresnel
-        float cos_theta = clamp(-dot(rd, n), 0.0, 1.0);
-        float F0 = 0.02;
-        float fresnel = F0 + (1.0 - F0) * pow(1.0 - cos_theta, 5.0);
-        
-        sea = mix(refr, refl, fresnel);
-      #else
-        // reflection
-        vec3 r = reflect(rd, n);
-        sea = sea_color(r);
-      #endif
+        if (dot(q, q) > 0.001) {
+          ray_out.p = prim.p;
+          ray_out.rd = q;
+          ray_out.init_dist = MIN_DIST_S;
+          ray_out.id = 1;
+          ray_out.type = PRIM_RAY;
+          ray_out.owner = prim.owner;
+          ray_out.is_underwater = false;
+          prim.type = REFR_RAY;
+          return true;
+        }
+      }
       
-      float fog = 1.0 - exp(-r_sea.t * 0.15);
-      sea = mix(sea, LIGHT_BLUE, fog);
-    } else { // over water
-      #if ENABLE_REFL_REFR_WATER
-        #if ENABLE_WATER_REFLECTION
+      // fresnel
+      float cos_theta = clamp(-dot(prim.rd, prim.n), 0.0, 1.0);
+      const float F0 = 0.02; // water
+      float fresnel = F0 + (1.0 - F0) * pow(1.0 - cos_theta, 5.0);
+      
+      s_color = mix(s_color, prim.refl, fresnel);
+      
+      float fog = 1.0 - exp(-prim.t * 0.15);
+      s_color = mix(s_color, LIGHT_BLUE, fog);
+    } else { // overwater
+      if (elem_hit == SEA) {
+        prim.n = get_waves_normal(prim.is_underwater);
+        
+        #if !ENABLE_WATER_SEC_BOUNCE
+          if (prim.id == 0)
+        #else
+          if (prim.id < 2)
+        #endif
+        {
           // reflection
-          vec3 r = reflect(rd, n);
+          vec3 r = reflect(prim.rd, prim.n);
           
           #if !ENABLE_WATER_SEC_BOUNCE
-            // make sure the ray goes overwater
+            // make sure the prim goes overwater
             if (r.y < 0) r.y = -r.y;
           #endif
           
-          vec3 refl = scene(p, r, MIN_DIST_S, 1, false);
-          
-          #if ENABLE_WATER_SEC_BOUNCE
-            if (elem_hit == SEA) {
-              vec3 n2 = get_waves_normal(false);
-              // return vec3(n2 * 0.5 + 0.5);
-              vec3 r2 = reflect(r, n2);
-              if (r2.y < 0) r2.y = -r2.y;
-              
-              refl = scene(r_sea.p, r2, 0.05, 2, false);
-            }
-          #endif
-          // if (!g_hit_scene) refl = sky_color(r);
-        #else
-          vec3 r = reflect(rd, n);
-          vec3 refl = sky_color(r);
-        #endif
+          ray_out.p = prim.p;
+          ray_out.rd = r;
+          ray_out.init_dist = MIN_DIST_S;
+          ray_out.id++;
+          ray_out.type = PRIM_RAY;
+          ray_out.owner = prim.owner;
+          ray_out.is_underwater = false;
+          prim.type = REFL_RAY;
+          return true;
+        }
+      }
+      
+      if (prim.type == REFL_RAY) {
+        prim.refl = s_color;
         
-        #if ENABLE_WATER_REFRACTION
-          // refraction
-          vec3 q = refract(rd, n, 1.0 / 1.33);
-          
-          vec3 refr;
-          if (dot(q, q) > 0.001) {
-            refr = scene(p, q, MIN_DIST_S, 1, true);
-            
-            #if ENABLE_WATER_SEC_BOUNCE
-              if (elem_hit == SEA) {
-                vec3 n2 = get_waves_normal(true);
-                vec3 r2 = reflect(q, n2);
-                
-                refr = scene(r_sea.p, r2, 0.05, 2, true);
-              }
-            #endif
-            // fade the fractal against the sea
-            if (g_hit_scene) {
-              float fog = 1.0 - exp(-t_scene * 0.15);
-              refr = mix(refr, SEA_COLOR, fog);
-            }/*  else {
-              refr = SEA_COLOR;
-            } */
-          } else {
-            refr = refl;
-          }
-        #else
-          vec3 refr = refl;
-        #endif
-      #else
-        // diffuse
-        float sun_diff = max(dot(n, lightdir_n), 0.0);
+        // refraction
+        vec3 q = refract(prim.rd, prim.n, 1.0 / 1.33);
         
-        //specular reflection
-        vec3 r = reflect(rd, n);
-        float sun_spec = pow(max(dot(r, lightdir_n), 0.0), 40.0);
-        vec3 refl = sky_color(r);
-        vec3 refr = SEA_COLOR;
-      #endif
+        if (dot(q, q) > 0.001) {
+          ray_out.p = prim.p;
+          ray_out.rd = q;
+          ray_out.init_dist = MIN_DIST_S;
+          ray_out.id = 1;
+          ray_out.type = PRIM_RAY;
+          ray_out.owner = prim.owner;
+          ray_out.is_underwater = true;
+          prim.type = REFR_RAY;
+          return true;
+        }
+      }
+      
+      // fade the fractal against the sea
+      if (g_hit_scene) {
+        float fog = 1.0 - exp(-t_scene * 0.15);
+        s_color = mix(s_color, SEA_COLOR, fog);
+      }
       
       // fresnel
-      float cos_theta = clamp(-dot(rd, n), 0.0, 1.0);
-      float F0 = 0.02;
+      float cos_theta = clamp(-dot(prim.rd, prim.n), 0.0, 1.0);
+      const float F0 = 0.02;
       float fresnel = F0 + (1.0 - F0) * pow(1.0 - cos_theta, 5.0);
       
-      sea = mix(refr, refl, fresnel);
+      vec3 sea = mix(s_color, prim.refl, fresnel);
+      sea += waves_surface_color(prim.p, prim.rd, prim.n);
       
-      sea += waves_surface_color(p, rd, n);
+      #if FOG_ENABLED
+        float fog = 1.0 - exp(-prim.t * FOG_DENSITY);
+        sea = mix(sea, FOG_COLOR, fog);
+      #endif
+      
+      s_color = sea;
     }
     
-    return sea;
+    return false;
   }
 #endif
 
-vec3 scene(vec3 p, vec3 rd, float init_dist, int ray_id, bool p_is_underwater) {
+vec3 scene(inout ray_t ray) {
   #if VOLUMETRIC_WAVES
     float t_sea_min, t_sea_max;
   #else
@@ -1485,29 +1457,29 @@ vec3 scene(vec3 p, vec3 rd, float init_dist, int ray_id, bool p_is_underwater) {
   #endif
   bool hit_sea;
   
-  
   #if SEA_ENABLED
     #if VOLUMETRIC_WAVES && ENABLE_WATER_SEC_BOUNCE
-      if (ray_id < 2) {
+      if (ray.id < 2)
     #else
-      if (ray_id == 0) {
+      if (ray.id == 0)
     #endif
+    {
       #if VOLUMETRIC_WAVES
-        hit_sea = ray_sea_slab_hit(p, rd, t_sea_min, t_sea_max);
+        hit_sea = ray_sea_slab_hit(ray.p, ray.rd, t_sea_min, t_sea_max);
       #else
-        hit_sea = ray_sea_plane_hit(p, rd, t_sea);
+        hit_sea = ray_sea_plane_hit(ray.p, ray.rd, t_sea);
       #endif
     } else {
       hit_sea = false;
     }
   #endif
   
-  vec3 init_p = p;
+  vec3 init_p = ray.p;
   
   #if RELAXED_RAYMARCH
-    vec4 d_t_m_pd = relaxed_raymarch(p, rd, init_dist, hit_sea, t_sea_min, t_sea_max);
+    vec4 d_t_m_pd = relaxed_raymarch(ray.p, ray.rd, ray.init_dist, hit_sea, t_sea_min, t_sea_max);
   #else
-    vec4 d_t_m_pd = raymarch(p, rd, init_dist, hit_sea, t_sea_min, t_sea_max);
+    vec4 d_t_m_pd = raymarch(ray.p, ray.rd, ray.init_dist, hit_sea, t_sea_min, t_sea_max);
   #endif
   
   float d = d_t_m_pd.x;
@@ -1528,17 +1500,19 @@ vec3 scene(vec3 p, vec3 rd, float init_dist, int ray_id, bool p_is_underwater) {
     if (hit_sea && t_scene > t_sea_min) {
       // if the ray hits the sea
       #if VOLUMETRIC_WAVES && ENABLE_WATER_SEC_BOUNCE
-        if (ray_id < 2) {
+        if (ray.id < 2)
       #else
-        if (ray_id == 0) {
+        if (ray.id == 0)
       #endif
+      {
         #if VOLUMETRIC_WAVES
-          if (test_vol_sea_hit(init_p, rd, p_is_underwater) && r_sea.t < t_scene) // initial p required for the first ray because of the depth buffer
+          if (test_vol_sea_hit(init_p, ray.rd, ray.is_underwater) && r_sea.t < t_scene) // initial ray.p required for the first ray because of the depth buffer
         #endif
         {
           #if !VOLUMETRIC_WAVES
-            set_sea_plane_struct(init_p, rd);
+            set_sea_plane_struct(init_p, ray.rd);
           #endif
+          ray.p = r_sea.p;
           elem_hit = SEA;
           g_hit_scene = false;
           return vec3(0.0);
@@ -1548,7 +1522,9 @@ vec3 scene(vec3 p, vec3 rd, float init_dist, int ray_id, bool p_is_underwater) {
   #endif
   
   if (elem_hit == MARBLE) {
-    g_hit_scene = false;
+    // put p on the marble surface
+    ray.p = init_p + ray.rd * t_scene;
+    g_hit_scene = true;
     return vec3(0.0);
   }
   
@@ -1558,25 +1534,29 @@ vec3 scene(vec3 p, vec3 rd, float init_dist, int ray_id, bool p_is_underwater) {
     float k = 1.0; // fully bright
     #if SHADOWS_ENABLED
       #if VIEW_SHADOWMAP
-        k = shadow_lookup(p, min_dist);
+        k = shadow_lookup(ray.p, min_dist);
       #else
-        // march from the shadowmap towards p
+        // march from the shadowmap towards ray.p
         
-        float an_t_marble = ray_sphere(p, lightdir_n, iMarblePos, iMarbleRad);
+        float an_t_marble = ray_sphere(ray.p, lightdir_n, iMarblePos, iMarbleRad);
         bool an_hit_marble = an_t_marble > 0.0;
         
         vec2 rm;
         if (!an_hit_marble) { // if it doesn't hit the marble
-          rm = raymarch_shadow_inv(p, lightdir_n, min_dist * 10, shadow_sharpness);
+          rm = raymarch_shadow_inv(ray.p, lightdir_n, min_dist * 10, shadow_sharpness);
           k = rm.y * min(rm.x, 1.0); // diffuse shadows, min_d * min(t, 1.0)
         } else {
-          k = raymarch_shadow_marble(p, lightdir_n, min_dist * 10, shadow_sharpness, an_t_marble);
+          k = raymarch_shadow_marble(ray.p, lightdir_n, min_dist * 10, shadow_sharpness, an_t_marble);
           
           if (elem_hit_sh == MARBLE) {
-            vec3 p_entry = p + lightdir_n * an_t_marble; // put p on the marble surface
-            rm = trace_marble(p_entry, lightdir_n);
-            
-            k *= rm.y * min(rm.x, 1.0);
+            #if !MARBLE_DIFFUSE
+              vec3 p_entry = ray.p + lightdir_n * an_t_marble; // put ray.p on the marble surface
+              rm = trace_marble(p_entry, lightdir_n);
+              
+              k *= rm.y * min(rm.x, 1.0);
+            #else
+              k = 0.0;
+            #endif
           } else {
             k = 0.0; // prevents the caustic to go through the floor
           }
@@ -1584,54 +1564,50 @@ vec3 scene(vec3 p, vec3 rd, float init_dist, int ray_id, bool p_is_underwater) {
         
         // calculate some wave shadows over the fractal
         #if SEA_ENABLED && ENABLE_WAVE_CAUSTICS
-          // if p is underwater
+          // if ray.p is underwater
           #if VOLUMETRIC_WAVES
-            if (k > min_dist * 10 && test_vol_sea_hit(p, lightdir_n, p_is_underwater)) {
+            if (k > min_dist * 10 && test_vol_sea_hit(ray.p, lightdir_n, ray.is_underwater)) {
           #else
             if (k > min_dist * 10) {
-              set_sea_plane_struct(p, lightdir_n);
+              set_sea_plane_struct(ray.p, lightdir_n);
           #endif
-            vec3 n = get_waves_normal(p_is_underwater);
+            vec3 n = get_waves_normal(ray.is_underwater);
             
             float focus = max(dot(-n, lightdir_n), 0.0); // this value is always > 0.4 && < 0.7
-            // float wave_shadow = pow(focus, 4.0) * 2.0;
+            float caustic = pow(focus, 4.0) * 2.0;
             
             // enlarge the depth at where the shadows can reach
             float depth = 1.0 - min(r_sea.t / 4.0, 1.0);
             
-            float wave_shadow = 1.0 - (focus * depth);
-            // wave_shadow = mix(LIGHT_COLOR, wave_shadow, depth);
-            k *= wave_shadow;
-            // fragColor = vec4(wave_shadow, 0.0, 0.0, 1.0);
+            float wave_caustic = 1.0 - (caustic * depth);
+            // wave_caustic = mix(LIGHT_COLOR, wave_caustic, depth);
+            k *= wave_caustic;
+            // fragColor = vec4(wave_caustic, 0.0, 0.0, 1.0);
           }
         #endif
       #endif
     #endif
     
-    #if FULL_NORMAL
-      // Get the surface normal
-      // vec3 n = calcNormal(p, min_dist * 0.5);
-      vec3 n = fastNormal(p, d, min_dist * 0.5);
-      
-      // find closest surface point, without this we get weird coloring artifacts
-      p -= n * d;
-      
-      color = frac_color(p, rd, n, k, min_dist, prev_d);
-    #else
-      color = frac_color(p, rd, k, min_dist, prev_d);
-    #endif
+    // Get the surface normal
+    // vec3 n = calcNormal(ray.p, min_dist * 0.5);
+    vec3 n = fastNormal(ray.p, d, min_dist * 0.5);
+    
+    // find closest surface point, without this we get weird coloring artifacts
+    ray.p -= n * d;
+    
+    color = frac_color(ray.p, ray.rd, n, k, min_dist, prev_d);
     
     #if FOG_ENABLED
-      float a = t / depth_far;
-      color = (1.0 - a) * color + a * BACKGROUND_COLOR;
+      float fog = 1.0 - exp(-t_scene * FOG_DENSITY);
+      color = mix(color, FOG_COLOR, fog);
     #endif
     
     // fade the fractal against the sea
-    if (p_is_underwater) {
+    if (ray.is_underwater) {
       // float water_depth = max(SEA_LEVEL - init_p.y, 0.0);
-      float depth_fade = exp(SEA_LEVEL - p.y * 0.15);
+      float depth_fade = exp(SEA_LEVEL - ray.p.y * 0.15);
       
-      float horizon = clamp(rd.y + 1.0, 0.0, 1.0); // up = 1.0, horizon = 1.0, down = 0.0
+      float horizon = clamp(ray.rd.y + 1.0, 0.0, 1.0); // up = 1.0, horizon = 1.0, down = 0.0
       float fog = 1.0 - exp(-t_scene * 0.15);
       vec3 sea_bg = mix(SEA_COLOR, LIGHT_BLUE, pow(horizon, 2.0));
       sea_bg *= depth_fade;
@@ -1639,14 +1615,14 @@ vec3 scene(vec3 p, vec3 rd, float init_dist, int ray_id, bool p_is_underwater) {
     }
   }
   #if SEA_ENABLED
-    else if (p_is_underwater) {
+    else if (ray.is_underwater) {
       g_hit_scene = false;
-      color = sea_color(rd);
+      color = sea_color(ray.rd);
     }
   #endif
   else {
     g_hit_scene = false;
-    color = sky_color(rd);
+    color = sky_color(ray.rd);
   }
   
   return color;
@@ -1688,29 +1664,81 @@ void main() {
     cam_is_underwater = cam_pos.y < SEA_LEVEL;
   #endif
   
-  vec3 p = cam_pos;
-  vec3 s_color = scene(p, rd, init_dist, 0, cam_is_underwater);
-  vec3 f_color;
+  ray_t ray, ray_list[NUM_RAY_LIMIT];
+  vec3 s_color;
+  ray.p = cam_pos;
+  ray.rd = rd;
+  ray.init_dist = init_dist;
+  ray.id = 0;
+  ray.type = PRIM_RAY;
+  ray.owner = NONE;
+  ray.is_underwater = cam_is_underwater;
+  int num_rays = 0;
+  bool skip_scene = false;
   
-  // Check if this is the glass marble
-  if (elem_hit == MARBLE) {
-    vec3 pm = p + rd * t_scene;
-    f_color = marble_color(pm, rd);
-  }
-  #if SEA_ENABLED
-    else if (elem_hit == SEA) {
-      #if !ENABLE_REFL_REFR_WATER
-        f_color = sea_surface_color(r_sea.p, rd, cam_is_underwater);
+  while (true) {
+    if (!skip_scene) {
+      s_color = scene(ray);
+      
+      if (elem_hit == MARBLE || elem_hit == SEA) {
+        if (num_rays < NUM_RAY_LIMIT) {
+          if (elem_hit == MARBLE) {
+            ray.owner = MARBLE;
+            ray.t = t_scene;
+          } else {
+            ray.owner = SEA;
+            ray.t = r_sea.t;
+          }
+          
+          ray_list[num_rays] = ray;
+          num_rays++;
+        } else {
+          if (elem_hit == SEA) {
+            s_color = sea_surface_color(ray);
+          } else {
+            s_color = vec3(0.0);
+          }
+          elem_hit = NONE;
+        }
+      }
+    }
+    skip_scene = false;
+    
+    // Check if this is the glass marble
+    if (ray.owner == MARBLE) {
+      #if MARBLE_DIFFUSE
+        s_color = marble_diff_color(ray);
       #else
-        f_color = waves_color(r_sea.p, rd, cam_is_underwater);
+        if (marble_refl_refr_color(ray_list[num_rays - 1], ray, s_color)) continue;
       #endif
     }
-  #endif
-  else {
-    f_color = s_color;
+    #if SEA_ENABLED
+      else if (ray.owner == SEA) {
+        #if !ENABLE_REFL_REFR_WATER
+          s_color = sea_surface_color(ray);
+        #else
+          if (waves_color(ray_list[num_rays - 1], ray, s_color)) continue;
+        #endif
+      }
+    #endif
+    
+    // unwind stack
+    
+    if (num_rays > 0) {
+      num_rays--;
+      
+      if (num_rays > 0) {
+        skip_scene = true;
+        elem_hit = NONE;
+        ray = ray_list[num_rays - 1];
+        continue;
+      }
+    }
+    
+    break;
   }
   
   #if OUTPUT_ENABLED
-    fragColor = vec4(clamp(f_color, 0.0, 1.0), 1.0);
+    fragColor = vec4(clamp(s_color, 0.0, 1.0), 1.0);
   #endif
 }

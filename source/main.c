@@ -434,7 +434,7 @@ static void init_globals() {
   mouse_captured = 1;
   draw_debug = 1;
   draw_depth = 0;
-  anim_water = 1;
+  anim_water = 0;
   
   reset_camera();
   
@@ -457,22 +457,22 @@ static void init_globals() {
 #define INIT_VIEW 1
 
 static void reset_camera() {
+  // center view
   #if !INIT_VIEW
-    // center view
     cam_pos.x = 0.0f;
     cam_pos.y = 4.3f; // 4.3f
     cam_pos.z = 5.0f;
     cam_yaw = 270.0f;
     cam_pitch = 0.0f;
+  // corner view
   #elif INIT_VIEW == 1
-    // corner view
     cam_pos.x = -4.0f;
     cam_pos.y = 4.3f; // 4.3f
     cam_pos.z = -4.0f;
     cam_yaw = 45.0f;
     cam_pitch = 0.0f;
+  // sea view
   #elif INIT_VIEW == 2
-    // sea view
     cam_pos.x = 0.0f;
     cam_pos.y = 0.1f; // -0.1f underwater
     cam_pos.z = -6.5f;
@@ -487,8 +487,9 @@ static void set_level(int level_id) {
     iFracAng1 = -0.12f;
     iFracAng2 = 0.5f;
     iFracShift = (vec3_t){-2.12f, -2.75f, 0.49f};
-    iFracCol = (vec3_t){0.42f, 0.38f, 0.19f};
+    // iFracCol = (vec3_t){0.42f, 0.38f, 0.19f};
     iMarblePos = (vec3_t){-2.95862f, 2.68825f, -1.11868f};
+    iMarblePos = (vec3_t){0.0f, 0.07f, -5.5f};
     iMarbleRad = 0.035f;
     iFlagPos = (vec3_t){2.95227f, 2.65057f, 1.11848f};
   } else
