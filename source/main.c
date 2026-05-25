@@ -487,9 +487,9 @@ static void set_level(int level_id) {
     iFracAng1 = -0.12f;
     iFracAng2 = 0.5f;
     iFracShift = (vec3_t){-2.12f, -2.75f, 0.49f};
-    // iFracCol = (vec3_t){0.42f, 0.38f, 0.19f};
+    iFracCol = (vec3_t){0.42f, 0.38f, 0.19f};
     iMarblePos = (vec3_t){-2.95862f, 2.68825f, -1.11868f};
-    iMarblePos = (vec3_t){0.0f, 0.07f, -5.5f};
+    // iMarblePos = (vec3_t){0.0f, 0.07f, -5.5f}; // place the ball over the water
     iMarbleRad = 0.035f;
     iFlagPos = (vec3_t){2.95227f, 2.65057f, 1.11848f};
   } else
