@@ -37,8 +37,8 @@
 #define FOG_ENABLED 1
 #define SEA_ENABLED 1
 #define VOLUMETRIC_WAVES 1
-#define ENABLE_REFL_REFR_WATER 0
-#define ENABLE_WATER_SEC_BOUNCE 1
+#define ENABLE_REFL_REFR_WATER 1
+#define ENABLE_WATER_SEC_BOUNCE 0
 #define ENABLE_SHADOWS_ON_SEA 1
 #define ENABLE_WAVE_CAUSTICS 1
 #define BLINN_PHONG_SEA 0
@@ -1110,20 +1110,20 @@ vec3 get_waves_normal(bool p_is_underwater) {
   
   bool ray_sea_slab_hit(vec3 p, vec3 rd, out float t_min, out float t_max) {
     // if the ray doesn't cross the slab
-    if ((p.y >  MAX_SEA_HEIGHT && rd.y >= 0.0) ||
-        (p.y < -MAX_SEA_HEIGHT && rd.y <= 0.0)) {
+    if ((p.y > SEA_LEVEL + MAX_SEA_HEIGHT && rd.y >= 0.0) ||
+        (p.y < SEA_LEVEL - MAX_SEA_HEIGHT && rd.y <= 0.0)) {
       t_min = 1e30;
       t_max = 1e30;
       return false;
     }
     
-    float t1 = (-MAX_SEA_HEIGHT - p.y) / rd.y;
-    float t2 = ( MAX_SEA_HEIGHT - p.y) / rd.y;
+    float t1 = (SEA_LEVEL - MAX_SEA_HEIGHT - p.y) / rd.y;
+    float t2 = (SEA_LEVEL + MAX_SEA_HEIGHT - p.y) / rd.y;
 
     t_min = min(t1, t2);
     t_max = max(t1, t2);
 
-    if (p.y <= MAX_SEA_HEIGHT && p.y >= -MAX_SEA_HEIGHT) {
+    if (p.y <= SEA_LEVEL + MAX_SEA_HEIGHT && p.y >= SEA_LEVEL - MAX_SEA_HEIGHT) {
       t_min = 0.0;
     }
     return true;
@@ -1171,12 +1171,12 @@ vec3 get_waves_normal(bool p_is_underwater) {
       h = wave_height(ps, t);
       float f = ps.y - SEA_LEVEL - h;
       
-      if (i > 0 && prev_f * f < 0.0) {
+      if (prev_f * f < 0.0) {
         bool crossing_down = prev_f > 0.0 && f < 0.0;
-        bool crossing_up   = prev_f < 0.0 && f > 0.0;
+        bool crossing_up = prev_f < 0.0 && f > 0.0;
         
         if ((!p_is_underwater && !crossing_down) ||
-            ( p_is_underwater && !crossing_up)) {
+            (p_is_underwater && !crossing_up)) {
           prev_f = f;
           prev_t = t;
           continue;
@@ -1433,7 +1433,7 @@ vec3 sea_surface_color(ray_t ray) {
       float fresnel = F0 + (1.0 - F0) * pow(1.0 - cos_theta, 5.0);
       
       vec3 sea = mix(s_color, prim.refl, fresnel);
-      sea += waves_surface_color(prim.p, prim.rd, prim.n);
+      // sea += waves_surface_color(prim.p, prim.rd, prim.n);
       
       #if FOG_ENABLED
         float fog = 1.0 - exp(-prim.t * FOG_DENSITY);
@@ -1605,7 +1605,7 @@ vec3 scene(inout ray_t ray) {
     // fade the fractal against the sea
     if (ray.is_underwater) {
       // float water_depth = max(SEA_LEVEL - init_p.y, 0.0);
-      float depth_fade = exp(SEA_LEVEL - ray.p.y * 0.15);
+      float depth_fade = exp((SEA_LEVEL - ray.p.y) * 0.15);
       
       float horizon = clamp(ray.rd.y + 1.0, 0.0, 1.0); // up = 1.0, horizon = 1.0, down = 0.0
       float fog = 1.0 - exp(-t_scene * 0.15);
