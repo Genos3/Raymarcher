@@ -42,7 +42,6 @@
 #define ENABLE_SHADOWS_ON_SEA 1
 #define ENABLE_WAVE_CAUSTICS 1
 #define BLINN_PHONG_SEA 0
-#define SEA_LEVEL 0.0
 #define SEA_COLOR vec3(0.02, 0.05, 0.08)
 #define LIGHT_BLUE vec3(0.12, 0.64, 0.89)
 
@@ -142,7 +141,11 @@ float calcAO(vec3 p, vec3 n);
 vec3 reflection(vec3 rd, vec3 n);
 vec3 refraction(vec3 rd, vec3 n, float p);
 vec4 raymarch(inout vec3 p, vec3 rd, float init_dist, bool hit_sea, float t_sea_min, float t_sea_max);
-vec2 raymarch_shadow_inv(vec3 p, vec3 rd, float init_dist, float sharpness);
+#if !ENABLE_SHADOW_SPARSE_RAYS
+  vec2 raymarch_shadow(inout vec3 p, vec3 rd, float init_dist, float sharpness);
+#else
+  vec2 raymarch_shadow_inv(vec3 p, vec3 rd, float init_dist, float sharpness);
+#endif
 float raymarch_shadow_marble(vec3 p, vec3 rd, float init_dist, float sharpness, float an_t_marble);
 vec4 relaxed_raymarch(inout vec3 p, vec3 rd, float init_dist, bool hit_sea, float t_sea_min, float t_sea_max);
 #if SHADOWS_ENABLED
@@ -190,6 +193,7 @@ uniform vec3 cam_up;
 uniform float depth_near;
 uniform float depth_far;
 uniform float focal_len;
+uniform float sea_level;
 
 uniform vec3 lightdir_n;
 
@@ -584,73 +588,143 @@ vec4 raymarch(inout vec3 p, vec3 rd, float init_dist, bool hit_sea, float t_sea_
   return vec4(d, t, min_dist, prev_d);
 }
 
-vec2 raymarch_shadow_inv(vec3 p, vec3 rd, float init_dist, float sharpness) {
-  #if DRAW_DE
-    num_DEs = 0.0;
-  #endif
-  
-  float max_depth;
-  vec3 rel = p - light_pos;
-  
-  float lx = dot(rel, light_right);
-  float ly = dot(rel, light_up);
-  
-  vec2 uv = vec2(
-    lx / ortho_scale + 0.5,
-    ly / ortho_scale + 0.5
-  );
-  
-  if (uv.x < 0.0 || uv.x > 1.0 ||
-      uv.y < 0.0 || uv.y > 1.0) {
-    max_depth = depth_far;
-  } else {
-    vec3 light_origin = light_pos +
-      light_right * lx +
-      light_up * ly;
-    
-    float light_dist = dot(p - light_origin, light_forward);
-    float texture_depth = texture(shadow_tex, uv).r;
-    max_depth = light_dist - texture_depth;
-    p += rd * max_depth; // set p on the shadow map
-  }
-  
-  // analytically test the marble and the flag
-  float radius_scale = 1.0 + (5.0 / shadow_sharpness);
-  float an_t_marble = ray_sphere(p, -rd, iMarblePos, iMarbleRad * radius_scale);
-  float an_t_flag = ray_sphere(p, -rd, flag_center, flag_radius);
-  
-  bool an_hit_marble = an_t_marble > 0.0;
-  bool an_hit_flag = an_t_flag > 0.0;
-  
-  float t = init_dist;
-  float min_d = 1.0;
-  int closer_elem = 0;
-  elem_hit_sh = 0;
-  
-  p += rd * init_dist;
-  
-  for (int i = 0; i < uMaxSteps; i++) {
-    float d = de_scene_sh(p, an_hit_marble, an_hit_flag, closer_elem);
-    
+#if !ENABLE_SHADOW_SPARSE_RAYS
+  vec2 raymarch_shadow(inout vec3 p, vec3 rd, float init_dist, float sharpness) {
     #if DRAW_DE
-      num_DEs += 0.01;
+      num_DEs = 0.0;
     #endif
     
-    if (d < MIN_DIST) {
-      elem_hit_sh = closer_elem;
-      break;
+    #if ENABLE_SHADOW_SPARSE_RAYS
+      float max_depth;
+      vec3 rel = p - light_pos;
+      
+      float lx = dot(rel, light_right);
+      float ly = dot(rel, light_up);
+      
+      vec2 uv = vec2(
+        lx / ortho_scale + 0.5,
+        ly / ortho_scale + 0.5
+      );
+      
+      if (uv.x < 0.0 || uv.x > 1.0 ||
+          uv.y < 0.0 || uv.y > 1.0) {
+        max_depth = depth_far;
+      } else {
+        vec3 light_origin = light_pos +
+          light_right * lx +
+          light_up * ly;
+        
+        float light_dist = dot(p - light_origin, light_forward);
+        float texture_depth = texture(shadow_tex, uv).r;
+        max_depth = light_dist - texture_depth;
+      }
+    #else
+      float max_depth = depth_far;
+    #endif
+    
+    // analytically test the marble and the flag
+    float radius_scale = 1.0 + (5.0 / shadow_sharpness);
+    float an_t_marble = ray_sphere(p, -rd, iMarblePos, iMarbleRad * radius_scale);
+    float an_t_flag = ray_sphere(p, -rd, flag_center, flag_radius);
+    
+    bool an_hit_marble = an_t_marble > 0.0;
+    bool an_hit_flag = an_t_flag > 0.0;
+    
+    float t = init_dist;
+    float min_d = 1.0;
+    int closer_elem = 0;
+    elem_hit_sh = 0;
+    
+    p += rd * init_dist;
+    
+    for (int i = 0; i < uMaxSteps; i++) {
+      float d = de_scene_sh(p, an_hit_marble, an_hit_flag, closer_elem);
+      
+      #if DRAW_DE
+        num_DEs += 0.01;
+      #endif
+      
+      if (d < MIN_DIST) {
+        elem_hit_sh = closer_elem;
+        break;
+      }
+      
+      t += d;
+      if (t > max_depth) break;
+      p += rd * d;
+      min_d = min(min_d, sharpness * d / t);
     }
     
-    t += d;
-    if (t > max_depth) break;
-    p -= rd * d;
-    min_d = min(min_d, sharpness * d / (max_depth - t));
+    return vec2(t, min_d);
   }
-  
-  // t += texture_depth; // 0.68 ms slower
-  
-  return vec2(t, min_d);
-}
+#else
+  vec2 raymarch_shadow_inv(vec3 p, vec3 rd, float init_dist, float sharpness) {
+    #if DRAW_DE
+      num_DEs = 0.0;
+    #endif
+    
+    float max_depth;
+    vec3 rel = p - light_pos;
+    
+    float lx = dot(rel, light_right);
+    float ly = dot(rel, light_up);
+    
+    vec2 uv = vec2(
+      lx / ortho_scale + 0.5,
+      ly / ortho_scale + 0.5
+    );
+    
+    if (uv.x < 0.0 || uv.x > 1.0 ||
+        uv.y < 0.0 || uv.y > 1.0) {
+      max_depth = depth_far;
+    } else {
+      vec3 light_origin = light_pos +
+        light_right * lx +
+        light_up * ly;
+      
+      float light_dist = dot(p - light_origin, light_forward);
+      float texture_depth = texture(shadow_tex, uv).r;
+      max_depth = light_dist - texture_depth;
+    }
+    
+    p += rd * max_depth; // set p on the shadow map or depth_far
+    
+    // analytically test the marble and the flag
+    float radius_scale = 1.0 + (5.0 / shadow_sharpness);
+    float an_t_marble = ray_sphere(p, -rd, iMarblePos, iMarbleRad * radius_scale);
+    float an_t_flag = ray_sphere(p, -rd, flag_center, flag_radius);
+    
+    bool an_hit_marble = an_t_marble > 0.0;
+    bool an_hit_flag = an_t_flag > 0.0;
+    
+    float t = init_dist;
+    float min_d = 1.0;
+    int closer_elem = 0;
+    elem_hit_sh = 0;
+    
+    p += rd * init_dist;
+    
+    for (int i = 0; i < uMaxSteps; i++) {
+      float d = de_scene_sh(p, an_hit_marble, an_hit_flag, closer_elem);
+      
+      #if DRAW_DE
+        num_DEs += 0.01;
+      #endif
+      
+      if (d < MIN_DIST) {
+        elem_hit_sh = closer_elem;
+        break;
+      }
+      
+      t += d;
+      if (t > max_depth) break;
+      p -= rd * d;
+      min_d = min(min_d, sharpness * d / (max_depth - t));
+    }
+    
+    return vec2(t, min_d);
+  }
+#endif
 
 float raymarch_shadow_marble(vec3 p, vec3 rd, float init_dist, float sharpness, float an_t_marble) {
   #if DRAW_DE
@@ -784,7 +858,11 @@ float raymarch_shadow_marble(vec3 p, vec3 rd, float init_dist, float sharpness, 
     vec3 n2 = normalize(p2 - iMarblePos);
     // q = (dot(q, rd) * 2.0) * q - rd; // negative reflection, used on the original game instead of refract
     q = refract(q, -n2, 1.5);
-    vec2 rm = raymarch_shadow_inv(p2, q, MIN_DIST_S, SHADOW_DARKNESS); // SHADOW_DARKNESS is not a typo, this produces the correct caustic size
+    #if !ENABLE_SHADOW_SPARSE_RAYS
+      vec2 rm = raymarch_shadow(p2, q, MIN_DIST_S, SHADOW_DARKNESS);
+    #else
+      vec2 rm = raymarch_shadow_inv(p2, q, MIN_DIST_S, SHADOW_DARKNESS); // SHADOW_DARKNESS is not a typo, this produces the correct caustic size
+    #endif
     float focus = max(dot(q, rd), 0.0);
     float caustic = pow(focus, 40.0) * 2.0;
     rm.y *= caustic;
@@ -986,7 +1064,7 @@ vec3 sky_color(vec3 rd) {
         #if VOLUMETRIC_WAVES
           ray_out.is_underwater = test_if_underwater(p_refr);
         #else
-          ray_out.is_underwater = p_refr.y < SEA_LEVEL;
+          ray_out.is_underwater = p_refr.y < sea_level;
         #endif
         prim.type = REFR_RAY;
         return true;
@@ -1070,7 +1148,7 @@ vec3 get_waves_normal(bool p_is_underwater) {
       return false;
     }
     
-    t_sea  = (SEA_LEVEL - p.y) / rd.y;
+    t_sea  = (sea_level - p.y) / rd.y;
     
     if (t_sea < 0.0) {
       t_sea = 1e30;
@@ -1085,7 +1163,7 @@ vec3 get_waves_normal(bool p_is_underwater) {
   void set_sea_plane_struct(vec3 p, vec3 rd) {
     if (abs(rd.y) < 1e-4) return;
     
-    r_sea.t = (SEA_LEVEL - p.y) / rd.y;
+    r_sea.t = (sea_level - p.y) / rd.y;
     if (r_sea.t <= 0.0) return;
     
     r_sea.p = p + rd * r_sea.t;
@@ -1110,20 +1188,20 @@ vec3 get_waves_normal(bool p_is_underwater) {
   
   bool ray_sea_slab_hit(vec3 p, vec3 rd, out float t_min, out float t_max) {
     // if the ray doesn't cross the slab
-    if ((p.y > SEA_LEVEL + MAX_SEA_HEIGHT && rd.y >= 0.0) ||
-        (p.y < SEA_LEVEL - MAX_SEA_HEIGHT && rd.y <= 0.0)) {
+    if ((p.y > sea_level + MAX_SEA_HEIGHT && rd.y >= 0.0) ||
+        (p.y < sea_level - MAX_SEA_HEIGHT && rd.y <= 0.0)) {
       t_min = 1e30;
       t_max = 1e30;
       return false;
     }
     
-    float t1 = (SEA_LEVEL - MAX_SEA_HEIGHT - p.y) / rd.y;
-    float t2 = (SEA_LEVEL + MAX_SEA_HEIGHT - p.y) / rd.y;
+    float t1 = (sea_level - MAX_SEA_HEIGHT - p.y) / rd.y;
+    float t2 = (sea_level + MAX_SEA_HEIGHT - p.y) / rd.y;
 
     t_min = min(t1, t2);
     t_max = max(t1, t2);
 
-    if (p.y <= SEA_LEVEL + MAX_SEA_HEIGHT && p.y >= SEA_LEVEL - MAX_SEA_HEIGHT) {
+    if (p.y <= sea_level + MAX_SEA_HEIGHT && p.y >= sea_level - MAX_SEA_HEIGHT) {
       t_min = 0.0;
     }
     return true;
@@ -1144,8 +1222,8 @@ vec3 get_waves_normal(bool p_is_underwater) {
     float inv_rdy = 1.0 / (abs(rd.y) > 1e-4 ? rd.y : sign(rd.y) * 1e-4);
     
     // Intersect the ray with the wave slab
-    float t_bot = (SEA_LEVEL - MAX_SEA_HEIGHT - p.y) * inv_rdy;
-    float t_top = (SEA_LEVEL + MAX_SEA_HEIGHT - p.y) * inv_rdy;
+    float t_bot = (sea_level - MAX_SEA_HEIGHT - p.y) * inv_rdy;
+    float t_top = (sea_level + MAX_SEA_HEIGHT - p.y) * inv_rdy;
     // rejects the sea behind p
     float t_min = max(min(t_bot, t_top), 0.0);
     float t_max = min(max(t_bot, t_top), 1e30); // sea max view distance
@@ -1158,7 +1236,7 @@ vec3 get_waves_normal(bool p_is_underwater) {
     float t = t_min;
     vec3 ps = p + rd * t;
     float h = wave_height(ps, t);
-    float prev_f = ps.y - SEA_LEVEL - h;
+    float prev_f = ps.y - sea_level - h;
     float prev_t = t_min;
     
     for (int i = 1; i <= steps; i++) {
@@ -1169,7 +1247,7 @@ vec3 get_waves_normal(bool p_is_underwater) {
       
       ps = p + rd * t;
       h = wave_height(ps, t);
-      float f = ps.y - SEA_LEVEL - h;
+      float f = ps.y - sea_level - h;
       
       if (prev_f * f < 0.0) {
         bool crossing_down = prev_f > 0.0 && f < 0.0;
@@ -1191,7 +1269,7 @@ vec3 get_waves_normal(bool p_is_underwater) {
           t = (ta + tb) * 0.5;
           ps = p + rd * t;
           h = wave_height(ps, t);
-          f = ps.y - SEA_LEVEL - h;
+          f = ps.y - sea_level - h;
           if (fa * f < 0.0) { tb = t; } else { ta = t; fa = f; }
         }
         
@@ -1215,7 +1293,7 @@ vec3 get_waves_normal(bool p_is_underwater) {
     float a1 = p.x * WAVE_X1 + p.z * WAVE_Z1 + iTime * WAVE_T1;
     float a2 = p.x * WAVE_X2 - p.z * WAVE_Z2 + iTime * WAVE_T2;
     float h = sin(a1) * WAVE_H1 + sin(a2) * WAVE_H2;
-    return p.y < SEA_LEVEL + h;
+    return p.y < sea_level + h;
   }
 #endif
 
@@ -1235,7 +1313,11 @@ vec3 sea_surface_color(ray_t ray) {
       // cast shadows on water
       // vec3 p_light = p + lightdir_n * MIN_DIST_S;
       
-      vec2 rm = raymarch_shadow_inv(ray.p, lightdir_n, MIN_DIST_S, shadow_sharpness);
+      #if !ENABLE_SHADOW_SPARSE_RAYS
+        vec2 rm = raymarch_shadow(ray.p, lightdir_n, MIN_DIST_S, shadow_sharpness);
+      #else
+        vec2 rm = raymarch_shadow_inv(ray.p, lightdir_n, MIN_DIST_S, shadow_sharpness);
+      #endif
       float shadow = rm.y * min(rm.x, 1.0);
       
       float sun_diff = max(dot(n, lightdir_n), 0.0) * shadow;
@@ -1277,7 +1359,11 @@ vec3 sea_surface_color(ray_t ray) {
       // cast shadows on water
       // vec3 p_light = p + lightdir_n * MIN_DIST_S;
       
-      vec2 rm = raymarch_shadow_inv(p, lightdir_n, MIN_DIST_S, shadow_sharpness);
+      #if !ENABLE_SHADOW_SPARSE_RAYS
+        vec2 rm = raymarch_shadow(p, lightdir_n, MIN_DIST_S, shadow_sharpness);
+      #else
+        vec2 rm = raymarch_shadow_inv(p, lightdir_n, MIN_DIST_S, shadow_sharpness);
+      #endif
       float shadow = rm.y * min(rm.x, 1.0);
       
       float sun_diff = max(dot(n, lightdir_n), 0.0) * shadow;
@@ -1543,7 +1629,11 @@ vec3 scene(inout ray_t ray) {
         
         vec2 rm;
         if (!an_hit_marble) { // if it doesn't hit the marble
-          rm = raymarch_shadow_inv(ray.p, lightdir_n, min_dist * 10, shadow_sharpness);
+          #if !ENABLE_SHADOW_SPARSE_RAYS
+            rm = raymarch_shadow(ray.p, lightdir_n, min_dist * 10, shadow_sharpness);
+          #else
+            rm = raymarch_shadow_inv(ray.p, lightdir_n, min_dist * 10, shadow_sharpness);
+          #endif
           k = rm.y * min(rm.x, 1.0); // diffuse shadows, min_d * min(t, 1.0)
         } else {
           k = raymarch_shadow_marble(ray.p, lightdir_n, min_dist * 10, shadow_sharpness, an_t_marble);
@@ -1602,17 +1692,19 @@ vec3 scene(inout ray_t ray) {
       color = mix(color, FOG_COLOR, fog);
     #endif
     
-    // fade the fractal against the sea
-    if (ray.is_underwater) {
-      // float water_depth = max(SEA_LEVEL - init_p.y, 0.0);
-      float depth_fade = exp((SEA_LEVEL - ray.p.y) * 0.15);
-      
-      float horizon = clamp(ray.rd.y + 1.0, 0.0, 1.0); // up = 1.0, horizon = 1.0, down = 0.0
-      float fog = 1.0 - exp(-t_scene * 0.15);
-      vec3 sea_bg = mix(SEA_COLOR, LIGHT_BLUE, pow(horizon, 2.0));
-      sea_bg *= depth_fade;
-      color = mix(color, sea_bg, fog);
-    }
+    #if SEA_ENABLED
+      // fade the fractal against the sea
+      if (ray.is_underwater) {
+        // float water_depth = max(sea_level - init_p.y, 0.0);
+        float depth_fade = exp((sea_level - ray.p.y) * 0.15);
+        
+        float horizon = clamp(ray.rd.y + 1.0, 0.0, 1.0); // up = 1.0, horizon = 1.0, down = 0.0
+        float fog = 1.0 - exp(-t_scene * 0.15);
+        vec3 sea_bg = mix(SEA_COLOR, LIGHT_BLUE, pow(horizon, 2.0));
+        sea_bg *= depth_fade;
+        color = mix(color, sea_bg, fog);
+      }
+    #endif
   }
   #if SEA_ENABLED
     else if (ray.is_underwater) {
@@ -1658,10 +1750,14 @@ void main() {
     return;
   #endif
   
-  #if VOLUMETRIC_WAVES
-    cam_is_underwater = test_if_underwater(cam_pos);
+  #if SEA_ENABLED
+    #if VOLUMETRIC_WAVES
+      cam_is_underwater = test_if_underwater(cam_pos);
+    #else
+      cam_is_underwater = cam_pos.y < sea_level;
+    #endif
   #else
-    cam_is_underwater = cam_pos.y < SEA_LEVEL;
+    cam_is_underwater = false;
   #endif
   
   ray_t ray, ray_list[NUM_RAY_LIMIT];

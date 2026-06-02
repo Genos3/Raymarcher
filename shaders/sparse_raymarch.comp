@@ -119,17 +119,10 @@ float de_flag(vec3 p) {
 	return d;
 }
 
-float de_scene(vec3 p, bool hit_marble, bool hit_flag) {
+float de_scene(vec3 p) {
   float d = de_fractal(p);
-  
-  if (hit_marble) {
-    d = min(d, de_marble(p));
-  }
-  
-  if (hit_flag) {
-    d = min(d, de_flag(p));
-  }
-  
+  d = min(d, de_marble(p));
+  d = min(d, de_flag(p));
   return d;
 }
 
@@ -166,17 +159,6 @@ void main() {
     cam_up * (uv.y - corner_offset.y)
   );
   
-  // far corner ray
-  vec3 rd_far = normalize(
-    cam_forward * focal_len +
-    cam_right * (uv.x + corner_offset.x) +
-    cam_up * (uv.y + corner_offset.y)
-  );
-  
-  // analytically test the marble and the flag
-  bool hit_marble = ray_sphere(ro, rd_near, iMarblePos, iMarbleRad) || ray_sphere(ro, rd_far, iMarblePos, iMarbleRad);
-  bool hit_flag = ray_sphere(ro, rd_near, flag_center, flag_radius) || ray_sphere(ro, rd_far, flag_center, flag_radius);
-  
   float current_depth = depth_near;
   float t = current_depth;
   vec3 p_center = ro + rd_center * t;
@@ -184,7 +166,7 @@ void main() {
   float d_prev = 0.0;
   
   for (int i = 0; i < uMaxSteps; i++) {
-    float d = de_scene(p_center, hit_marble, hit_flag);
+    float d = de_scene(p_center);
     float min_dist = max(FOVperPixel * t, MIN_DIST);
     
     if (d < min_dist)
