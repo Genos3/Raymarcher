@@ -46,8 +46,8 @@ static inline vec3_t normalize(vec3_t v) {
 
 static inline vec3_t cross(vec3_t a, vec3_t b) {
   return (vec3_t){
-    a.y*b.z - a.z*b.y,
-    a.z*b.x - a.x*b.z,
-    a.x*b.y - a.y*b.x
+    a.y * b.z - a.z * b.y,
+    a.z * b.x - a.x * b.z,
+    a.x * b.y - a.y * b.x
   };
 }

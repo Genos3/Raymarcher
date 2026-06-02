@@ -37,7 +37,7 @@
 #define FOG_ENABLED 1
 #define SEA_ENABLED 1
 #define VOLUMETRIC_WAVES 1
-#define ENABLE_REFL_REFR_WATER 1
+#define ENABLE_REFL_REFR_WATER 0
 #define ENABLE_WATER_SEC_BOUNCE 0
 #define ENABLE_SHADOWS_ON_SEA 1
 #define ENABLE_WAVE_CAUSTICS 1
@@ -787,7 +787,7 @@ float raymarch_shadow_marble(vec3 p, vec3 rd, float init_dist, float sharpness, 
     vec2 rm = raymarch_shadow_inv(p2, q, MIN_DIST_S, SHADOW_DARKNESS); // SHADOW_DARKNESS is not a typo, this produces the correct caustic size
     float focus = max(dot(q, rd), 0.0);
     float caustic = pow(focus, 40.0) * 2.0;
-    rm.y += caustic;
+    rm.y *= caustic;
     return rm;
   }
 #endif
